@@ -4,7 +4,6 @@ const dotenv = require('dotenv');
 const SpotifyWebApi = require('spotify-web-api-node');
 const path = require('path');
 
-
 // Load environment variables
 dotenv.config({ path: './server/.env' });
 
@@ -24,46 +23,45 @@ const spotifyApi = new SpotifyWebApi({
   redirectUri: process.env.REDIRECT_URI || 'http://localhost:3000/callback'
 });
 
-// Predefined mood-to-genre/playlist mapping
+// Mood-to-genre mapping for fallback recommendations (used as keywords)
 const moodMappings = {
-  happy: { genres: ['pop', 'happy'], seedTracks: ['37i9dQZF1DXdPec7aLTmlC'] },
-  sad: { genres: ['sad', 'rainy-day'], seedTracks: ['37i9dQZF1DX7qK8ma5wgG1'] },
-  energetic: { genres: ['workout', 'power-pop'], seedTracks: ['37i9dQZF1DX76Wlfdnj7AP'] },
-  relaxed: { genres: ['chill', 'ambient'], seedTracks: ['37i9dQZF1DX4WYpdgoIcn6'] },
-  angry: { genres: ['rock', 'metal'], seedTracks: ['37i9dQZF1DWWJOmJ7nRx0C'] },
-  focused: { genres: ['focus', 'study'], seedTracks: ['37i9dQZF1DX8NTLI2TIfZs'] }
+  happy: ['pop', 'dance', 'indie pop'],
+  sad: ['sad', 'acoustic', 'blues'],
+  energetic: ['rock', 'electronic', 'hip-hop'],
+  relaxed: ['chill', 'ambient', 'acoustic'],
+  angry: ['metal', 'punk', 'hard rock'],
+  focused: ['study', 'instrumental', 'classical']
 };
 
-// Authentication endpoint
+// ** Step 1: Authentication Flow **
 app.get('/login', (req, res) => {
-    const scopes = ['user-read-private', 'user-read-email', 'playlist-read-private'];
-    
-    // Debugging
-    console.log('SPOTIFY_CLIENT_ID exists:', !!process.env.SPOTIFY_CLIENT_ID);
-    
-    // Manual redirect with client_id as fallback
-    if (!process.env.SPOTIFY_CLIENT_ID) {
-      console.error('Client ID not found in environment variables!');
-      return res.status(500).send('Spotify Client ID not configured');
-    }
-    
-    const authorizeURL = spotifyApi.createAuthorizeURL(scopes);
-    console.log('Redirecting to:', authorizeURL);
-    
-    res.redirect(authorizeURL);
-  });
-// Callback after Spotify authentication
+  const scopes = [
+    'user-read-private',
+    'user-read-email',
+    'playlist-read-private',
+    'user-top-read' // Required for personalized recommendations
+  ];
+
+  console.log('SPOTIFY_CLIENT_ID exists:', !!process.env.SPOTIFY_CLIENT_ID);
+
+  if (!process.env.SPOTIFY_CLIENT_ID) {
+    console.error('Client ID not found in environment variables!');
+    return res.status(500).send('Spotify Client ID not configured');
+  }
+
+  const authorizeURL = spotifyApi.createAuthorizeURL(scopes);
+  console.log('Redirecting to:', authorizeURL);
+  res.redirect(authorizeURL);
+});
+
+// Handle authentication callback
 app.get('/callback', async (req, res) => {
   const { code } = req.query;
-  
   try {
     const data = await spotifyApi.authorizationCodeGrant(code);
     const { access_token, refresh_token } = data.body;
-    
     spotifyApi.setAccessToken(access_token);
     spotifyApi.setRefreshToken(refresh_token);
-    
-    // Redirect to the main page
     res.redirect('/#authenticated');
   } catch (err) {
     console.error('Error getting tokens:', err);
@@ -71,62 +69,98 @@ app.get('/callback', async (req, res) => {
   }
 });
 
-// Get recommendations based on mood
+// ** Step 2: Get User Country for Market Filtering **
+async function getUserCountry() {
+  try {
+    const userProfile = await spotifyApi.getMe();
+    return userProfile.body.country || 'US'; // Default to US if not found
+  } catch (error) {
+    console.error('Error fetching user profile:', error);
+    return 'US';
+  }
+}
+
+// ** Step 3: Fetch User’s Top Tracks & Artists for Personalization **
+async function getUserTopGenresAndArtists() {
+  try {
+    const topTracks = await spotifyApi.getMyTopTracks({ limit: 10 });
+    if (!topTracks.body.items.length) {
+      console.log('No top tracks found, falling back to mood keywords.');
+      return null;
+    }
+    let seedArtists = [];
+    for (const track of topTracks.body.items) {
+      const artistId = track.artists[0]?.id;
+      if (artistId) seedArtists.push(artistId);
+    }
+    return { seedArtists };
+  } catch (error) {
+    console.error('Error fetching user’s top tracks:', error);
+    return null;
+  }
+}
+
+// ** Step 4: Generate Personalized Song Recommendations **
 app.get('/recommendations/:mood', async (req, res) => {
   const { mood } = req.params;
-  
-  // Check if we need to refresh the token
   try {
-    const data = await spotifyApi.refreshAccessToken();
-    spotifyApi.setAccessToken(data.body.access_token);
+    // Refresh access token
+    await spotifyApi.refreshAccessToken();
   } catch (err) {
-    console.log('Could not refresh access token', err);
+    console.error('Could not refresh access token:', err);
   }
-  
-  // Get recommendations based on the mood
+
   try {
-    if (!moodMappings[mood]) {
-      return res.status(400).json({ error: 'Invalid mood' });
+    const userCountry = await getUserCountry();
+    let userData = await getUserTopGenresAndArtists();
+    let query = "";
+
+    // If we have a top artist, use its name combined with a mood keyword
+    if (userData && userData.seedArtists && userData.seedArtists.length > 0) {
+      const artistData = await spotifyApi.getArtist(userData.seedArtists[0]);
+      const artistName = artistData.body.name;
+      // Use the first keyword from the mood mapping as a hint
+      const moodKeyword = moodMappings[mood] ? moodMappings[mood][0] : mood;
+      query = `${artistName} ${moodKeyword}`;
+    } else {
+      // Fallback: join all mood keywords into a query string
+      query = moodMappings[mood] ? moodMappings[mood].join(' ') : mood;
     }
-    
-    const { genres, seedTracks } = moodMappings[mood];
-    
-    // Get recommendations using seed genres and tracks
-    const recommendations = await spotifyApi.getRecommendations({
-      seed_genres: genres.slice(0, 2),
-      seed_tracks: seedTracks.slice(0, 1),
-      limit: 10
+
+    console.log(`Searching tracks with query: "${query}" and market: ${userCountry}`);
+    const results = await spotifyApi.searchTracks(query, {
+      limit: 10,
+      market: userCountry
     });
-    
-    res.json(recommendations.body);
+
+    if (!results.body.tracks.items.length) {
+      console.log('No results found from search.');
+      return res.status(404).json({ error: 'No songs found for this mood' });
+    }
+
+    console.log(`Found ${results.body.tracks.items.length} tracks for mood "${mood}".`);
+    res.json(results.body.tracks.items);
   } catch (err) {
     console.error('Error getting recommendations:', err);
     res.status(500).json({ error: 'Failed to get recommendations' });
   }
 });
 
-// Get featured playlists for a mood
+// ** Step 5: Fetch Playlists Based on Mood **
 app.get('/playlists/:mood', async (req, res) => {
   const { mood } = req.params;
-  
   try {
-    // Map mood to search query
-    const queryMapping = {
-      happy: 'happy',
-      sad: 'sad',
-      energetic: 'energy',
-      relaxed: 'chill',
-      angry: 'angry',
-      focused: 'focus'
-    };
-    
-    const query = queryMapping[mood] || mood;
-    
-    // Search for playlists related to the mood
+    const query = moodMappings[mood] ? moodMappings[mood].join(' ') : mood;
     const result = await spotifyApi.searchPlaylists(query, { limit: 5 });
+    console.log(`Playlists for mood "${mood}":`, result.body.playlists?.items);
     res.json(result.body);
   } catch (err) {
     console.error('Error getting playlists:', err);
     res.status(500).json({ error: 'Failed to get playlists' });
   }
+});
+
+// Start the server
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
 });
