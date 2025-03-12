@@ -193,6 +193,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     throw new Error(`HTTP error! Status: ${songsResponse.status}`);
                 }
                 songsData = await songsResponse.json();
+                console.log('Songs data received:', songsData);
             } catch (error) {
                 console.error('Error fetching recommendations:', error);
                 // Fallback to a second attempt with a slight delay
@@ -219,6 +220,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     throw new Error(`HTTP error! Status: ${playlistsResponse.status}`);
                 }
                 playlistsData = await playlistsResponse.json();
+                console.log('Playlists data received:', playlistsData);
             } catch (error) {
                 console.error('Error fetching playlists:', error);
                 // Fallback to a second attempt
@@ -240,11 +242,52 @@ document.addEventListener('DOMContentLoaded', () => {
             // Render songs if data exists
             if (songsData && songsData.tracks) {
                 renderSongs(songsData.tracks);
+            } else if (songsData && Array.isArray(songsData)) {
+                // Fallback in case the API returns a direct array
+                renderSongs(songsData);
+            } else {
+                songsList.innerHTML = `
+                    <div class="no-results">
+                        <i class="fas fa-music"></i>
+                        <p>No songs found for this mood. Try another one!</p>
+                    </div>
+                `;
             }
             
-            // Render playlists if data exists
-            if (playlistsData && playlistsData.playlists && playlistsData.playlists.items) {
-                renderPlaylists(playlistsData.playlists.items);
+            // Render playlists if data exists - FIXED to handle multiple response formats
+            if (playlistsData) {
+                // Case 1: Standard format {playlists: {items: [...]}}
+                if (playlistsData.playlists && Array.isArray(playlistsData.playlists.items)) {
+                    console.log('Rendering playlists from standard format');
+                    renderPlaylists(playlistsData.playlists.items);
+                } 
+                // Case 2: Simplified format {playlists: [...]}
+                else if (playlistsData.playlists && Array.isArray(playlistsData.playlists)) {
+                    console.log('Rendering playlists from simplified format');
+                    renderPlaylists(playlistsData.playlists);
+                }
+                // Case 3: Direct array [...]
+                else if (Array.isArray(playlistsData)) {
+                    console.log('Rendering playlists from direct array');
+                    renderPlaylists(playlistsData);
+                }
+                // No valid data found
+                else {
+                    console.error('No valid playlist data format found');
+                    playlistsList.innerHTML = `
+                        <div class="no-results">
+                            <i class="fas fa-list"></i>
+                            <p>No playlists found for this mood. Try another one!</p>
+                        </div>
+                    `;
+                }
+            } else {
+                playlistsList.innerHTML = `
+                    <div class="no-results">
+                        <i class="fas fa-list"></i>
+                        <p>No playlists found for this mood. Try another one!</p>
+                    </div>
+                `;
             }
             
             // Hide loader
@@ -261,6 +304,71 @@ document.addEventListener('DOMContentLoaded', () => {
                 </div>
             `;
         }
+    }
+    
+    // Updated renderPlaylists function with better error handling
+    function renderPlaylists(playlists) {
+        playlistsList.innerHTML = '';
+        
+        // Additional logging
+        console.log('renderPlaylists called with:', playlists);
+        console.log('Is array:', Array.isArray(playlists));
+        
+        // Make sure we have an array to work with
+        if (!Array.isArray(playlists) || playlists.length === 0) {
+            console.warn('Invalid playlists data or empty array:', playlists);
+            playlistsList.innerHTML = `
+                <div class="no-results">
+                    <i class="fas fa-list"></i>
+                    <p>No playlists found for this mood. Try another one!</p>
+                </div>
+            `;
+            return;
+        }
+
+        playlists.forEach((playlist) => {
+            // Ensure playlist object exists
+            if (!playlist) {
+                console.warn('Encountered a null/undefined playlist object, skipping...');
+                return;
+            }
+            
+            // Log the first playlist to help debug
+            if (playlist === playlists[0]) {
+                console.log('First playlist object:', playlist);
+            }
+
+            // Safely handle images array
+            const imageUrl =
+                playlist.images && playlist.images.length > 0
+                    ? playlist.images[0].url
+                    : '/placeholder.jpg';
+
+            const ownerName =
+                playlist.owner && playlist.owner.display_name
+                    ? playlist.owner.display_name
+                    : 'Unknown';
+
+            const playlistCard = document.createElement('div');
+            playlistCard.className = 'music-card';
+
+            playlistCard.innerHTML = `
+                <img src="${imageUrl}" alt="${playlist.name || 'Playlist'}" class="music-card-image">
+                <div class="music-card-content">
+                    <div class="music-card-title">${playlist.name || 'Untitled Playlist'}</div>
+                    <div class="music-card-artists">By: ${ownerName}</div>
+                    <a href="${playlist.external_urls?.spotify || '#'}" 
+                        target="_blank" 
+                        class="music-card-button">
+                        <i class="fab fa-spotify"></i> Open on Spotify
+                    </a>
+                </div>
+            `;
+
+            playlistsList.appendChild(playlistCard);
+        });
+        
+        console.log(`Successfully rendered ${playlists.length} playlists`);
     }
     
     function renderSongs(songs) {
@@ -329,56 +437,4 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         });
     }
-    
-    function renderPlaylists(playlists) {
-        playlistsList.innerHTML = '';
-    
-        // Validate `playlists` is actually an array
-        if (!Array.isArray(playlists) || playlists.length === 0) {
-            playlistsList.innerHTML = `
-                <div class="no-results">
-                    <i class="fas fa-list"></i>
-                    <p>No playlists found for this mood. Try another one!</p>
-                </div>
-            `;
-            return;
-        }
-    
-        playlists.forEach((playlist) => {
-            // Ensure playlist object exists
-            if (!playlist) {
-                console.warn('Encountered a null/undefined playlist object, skipping...');
-                return;
-            }
-    
-            // Safely handle images array
-            const imageUrl =
-                playlist.images && playlist.images.length > 0
-                    ? playlist.images[0].url
-                    : '/placeholder.jpg';
-    
-            const ownerName =
-                playlist.owner && playlist.owner.display_name
-                    ? playlist.owner.display_name
-                    : 'Unknown';
-    
-            const playlistCard = document.createElement('div');
-            playlistCard.className = 'music-card';
-    
-            playlistCard.innerHTML = `
-                <img src="${imageUrl}" alt="${playlist.name || 'Playlist'}" class="music-card-image">
-                <div class="music-card-content">
-                    <div class="music-card-title">${playlist.name || 'Untitled Playlist'}</div>
-                    <div class="music-card-artists">By: ${ownerName}</div>
-                    <a href="${playlist.external_urls?.spotify || '#'}" 
-                        target="_blank" 
-                        class="music-card-button">
-                        <i class="fab fa-spotify"></i> Open on Spotify
-                    </a>
-                </div>
-            `;
-    
-            playlistsList.appendChild(playlistCard);
-        });
-    }    
-})
+});
