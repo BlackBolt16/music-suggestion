@@ -130,8 +130,3 @@ app.get('/playlists/:mood', async (req, res) => {
     res.status(500).json({ error: 'Failed to get playlists' });
   }
 });
-
-// Start server
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
